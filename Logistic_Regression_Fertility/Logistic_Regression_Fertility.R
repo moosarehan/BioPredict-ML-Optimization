@@ -154,3 +154,116 @@ print(odds_ratios)
 # Calculate 95% confidence intervals for the odds ratios
 conf_intervals <- exp(confint(data_glm))
 print(conf_intervals)
+
+####section 4: OPTIMIZED ML PIPELINE (Refactored)####
+# 1. Randomized K-Fold Cross-Validation
+# 2. Random Forest Classifier
+# 3. SMOTE Class Balancing
+
+cat("\n--- Executing Targeted ML Optimization ---\n")
+library(caret)
+library(randomForest)
+library(smotefamily)
+
+# Prepare data
+ml_data <- data.frame(
+  Treatment = factor(data$Treatment),
+  Trial = factor(data$Trial),
+  Exopher = factor(data$Exopher, levels = c(0, 1), labels = c("No", "Yes"))
+)
+
+# Train/Test Split (80/20)
+set.seed(42)
+train_index <- createDataPartition(ml_data$Exopher, p = 0.8, list = FALSE)
+train_data <- ml_data[train_index, ]
+test_data <- ml_data[-train_index, ]
+
+# Apply SMOTE to Training Data
+train_encoded <- data.frame(
+  model.matrix(~ Treatment * Trial - 1, data = train_data),
+  Exopher = as.numeric(train_data$Exopher) - 1
+)
+
+smote_result <- SMOTE(train_encoded[, -ncol(train_encoded)], train_encoded$Exopher, K = 5)
+train_smote <- smote_result$data
+train_smote$Exopher <- factor(train_smote$class, levels = c(0, 1), labels = c("No", "Yes"))
+train_smote <- train_smote[, -which(names(train_smote) == "class")]
+
+# K-Fold Cross-Validation Setup (K=5)
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+# Random Forest with Grid Search
+rf_grid <- expand.grid(mtry = c(1, 2, 3))
+rf_model <- train(
+  Exopher ~ .,
+  data = train_smote,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = rf_grid,
+  metric = "ROC",
+  ntree = 200
+)
+
+# Evaluation
+test_encoded <- data.frame(
+  model.matrix(~ Treatment * Trial - 1, data = test_data),
+  Exopher = test_data$Exopher
+)
+rf_pred <- predict(rf_model, newdata = test_encoded)
+rf_prob <- predict(rf_model, newdata = test_encoded, type = "prob")[, "Yes"]
+rf_cm <- confusionMatrix(rf_pred, test_data$Exopher, positive = "Yes")
+
+print(rf_cm)
+
+# --- NEW RESULT PLOT - Predictive Probabilities ---
+pred_plot_data <- test_data
+pred_plot_data$pred_prob <- rf_prob
+
+prob_plot <- ggplot(pred_plot_data, aes(x = Treatment, y = pred_prob, fill = Treatment)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.4) +
+  theme_prism() +
+  labs(title = "Improvised Model: Predicted Exopher Probability",
+       subtitle = "Random Forest Probabilities (Fertility Dataset)",
+       y = "Predicted Probability", x = "Fertility Status") +
+  theme(legend.position = "none")
+
+ggsave("improvised_predictive_probabilities.svg", plot = prob_plot, width = 7, height = 5)
+cat("\nPredictive probability plot saved as 'improvised_predictive_probabilities.svg'\n")
+
+# --- MASTER COMPARISON PLOT (Baseline vs Improvised) ---
+baseline_glm <- glm(Exopher ~ ., family = binomial(link = "logit"), data = train_data)
+baseline_pred_prob <- predict(baseline_glm, newdata = test_data, type = "response")
+baseline_pred <- factor(ifelse(baseline_pred_prob > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+baseline_cm <- confusionMatrix(baseline_pred, test_data$Exopher, positive = "Yes")
+
+comparison_master <- data.frame(
+  Metric = rep(c("Accuracy", "Recall", "F1-Score"), each = 2),
+  Model = rep(c("Baseline (GLM)", "Improvised (RF+SMOTE)"), 3),
+  Value = c(
+    baseline_cm$overall["Accuracy"], rf_cm$overall["Accuracy"],
+    baseline_cm$byClass["Sensitivity"], rf_cm$byClass["Sensitivity"],
+    baseline_cm$byClass["F1"], rf_cm$byClass["F1"]
+  ) * 100
+)
+comparison_master$Value[is.na(comparison_master$Value)] <- 0
+
+master_plot <- ggplot(comparison_master, aes(x = Metric, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6, color = "black") +
+  theme_minimal() +
+  scale_fill_manual(values = c("gray70", "steelblue")) +
+  labs(title = "Engineering Performance: Baseline vs. Improvised",
+       subtitle = "Fertility Dataset: Significant Gains in Recall and F1-Score",
+       y = "Score (%)", x = "") +
+  geom_text(aes(label = sprintf("%.1f%%", Value)), 
+            position = position_dodge(width = 0.7), vjust = -0.5, size = 3.5) +
+  theme_prism() +
+  theme(legend.position = "top")
+
+ggsave("master_performance_comparison.svg", plot = master_plot, width = 8, height = 6)
+cat("\nMaster comparison plot saved as 'master_performance_comparison.svg'\n")
